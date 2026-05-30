@@ -2,7 +2,7 @@
 pc_agent.py — запускається на ПК користувача
 
 Встанови бібліотеки:
-  pip install aiogram psutil pycaw comtypes Pillow pyautogui requests
+  pip install psutil pycaw comtypes Pillow pyautogui requests
 
 Запуск:
   python pc_agent.py
@@ -17,10 +17,13 @@ import json
 import ctypes
 import psutil
 import io
+import threading
 import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 CONFIG_FILE = "config.json"
 PC_NAME = socket.gethostname()
+HTTP_PORT = 8765
 
 # ─── Конфіг ──────────────────────────────────────────────────────────────────
 
@@ -53,7 +56,7 @@ def setup():
         print("✅ Токен збережено!\n")
 
     if not config.get("telegram_id"):
-        print("\nЩоб дізнатись свій Telegram ID:")
+        print("Щоб дізнатись свій Telegram ID:")
         print("  Напиши @userinfobot в Telegram команду /start")
         print("  Скопіюй число 'Id: XXXXXXXXXX'\n")
         tid = input("Введи свій Telegram ID: ").strip()
@@ -66,17 +69,17 @@ def setup():
 
     return config["token"], config["telegram_id"]
 
-# ─── Telegram API (без aiogram, просто requests) ─────────────────────────────
+# ─── Telegram надсилання (тільки відправка, без читання) ──────────────────────
 
 def tg_send(token, chat_id, text):
     try:
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
             timeout=10
         )
     except Exception as e:
-        print(f"Помилка надсилання: {e}")
+        print(f"[tg_send] Помилка: {e}")
 
 def tg_send_photo(token, chat_id, photo_bytes, caption=""):
     try:
@@ -87,31 +90,7 @@ def tg_send_photo(token, chat_id, photo_bytes, caption=""):
             timeout=15
         )
     except Exception as e:
-        print(f"Помилка надсилання фото: {e}")
-
-def tg_get_updates(token, offset=None):
-    try:
-        params = {"timeout": 20, "allowed_updates": ["message"]}
-        if offset:
-            params["offset"] = offset
-        r = requests.get(
-            f"https://api.telegram.org/bot{token}/getUpdates",
-            params=params,
-            timeout=25
-        )
-        return r.json()
-    except Exception:
-        return {"ok": False, "result": []}
-
-def tg_delete_webhook(token):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{token}/deleteWebhook",
-            json={"drop_pending_updates": False},
-            timeout=10
-        )
-    except Exception:
-        pass
+        print(f"[tg_send_photo] Помилка: {e}")
 
 # ─── Системні функції ─────────────────────────────────────────────────────────
 
@@ -130,7 +109,7 @@ def get_stats() -> str:
         if temps:
             for name, entries in temps.items():
                 if entries:
-                    temp_str = f"\n🌡 Темп: {entries[0].current:.0f}C"
+                    temp_str = f"\n🌡 Темп: {entries[0].current:.0f}°C"
                     break
     except Exception:
         pass
@@ -248,70 +227,174 @@ def reboot_pc():
     if platform.system() == "Windows":
         os.system("shutdown /r /t 3")
 
-# ─── Обробка команд ──────────────────────────────────────────────────────────
+# ─── HTTP сервер — приймає команди від main.py ────────────────────────────────
 
-def handle_command(token, chat_id, action):
-    action = action.strip()
-    print(f"  Команда: {action}")
+# Глобальні для доступу з хендлера
+g_token = None
+g_chat_id = None
 
+class CommandHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Мовчазний режим — без спаму в термінал
+        pass
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            data = json.loads(body)
+            action = data.get("action", "")
+
+            print(f"  ▶ Команда: {action}")
+            result = execute_command(action)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "result": result}).encode())
+
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+
+    def do_GET(self):
+        # Пінг для перевірки що агент живий
+        if self.path == "/ping":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "pc": PC_NAME}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def execute_command(action: str) -> str:
+    """Виконує команду і повертає результат як текст"""
     if action == "stats":
-        tg_send(token, chat_id, get_stats())
+        result = get_stats()
+        tg_send(g_token, g_chat_id, result)
+        return "ok"
 
     elif action == "get_volume":
-        tg_send(token, chat_id, f"VOLUME:{get_volume()}")
+        vol = get_volume()
+        return str(vol)
 
     elif action == "vol_up":
         vol = get_volume()
-        set_volume(vol + 10)
-        tg_send(token, chat_id, f"VOLUME:{min(vol+10, 100)}")
+        new_vol = min(vol + 10, 100)
+        set_volume(new_vol)
+        return str(new_vol)
 
     elif action == "vol_down":
         vol = get_volume()
-        set_volume(vol - 10)
-        tg_send(token, chat_id, f"VOLUME:{max(vol-10, 0)}")
+        new_vol = max(vol - 10, 0)
+        set_volume(new_vol)
+        return str(new_vol)
 
     elif action == "vol_mute":
         toggle_mute()
-        tg_send(token, chat_id, f"VOLUME:{get_volume()}")
+        return str(get_volume())
 
     elif action == "music_playpause":
         media_key(0xB3)
+        return "ok"
 
     elif action == "music_next":
         media_key(0xB0)
+        return "ok"
 
     elif action == "music_prev":
         media_key(0xB1)
+        return "ok"
 
     elif action == "mic_toggle":
-        tg_send(token, chat_id, toggle_mic())
+        result = toggle_mic()
+        tg_send(g_token, g_chat_id, f"🎤 {result}")
+        return result
 
     elif action == "screenshot":
         img = take_screenshot()
         if img:
-            tg_send_photo(token, chat_id, img, f"📸 {PC_NAME}")
+            tg_send_photo(g_token, g_chat_id, img, f"📸 {PC_NAME}")
+        return "ok"
 
     elif action == "lock":
         lock_screen()
+        return "ok"
 
     elif action == "sleep":
         sleep_pc()
+        return "ok"
 
     elif action == "shutdown":
-        tg_send(token, chat_id, "🔴 ПК вимикається...")
-        time.sleep(1)
-        shutdown_pc()
+        tg_send(g_token, g_chat_id, "🔴 ПК вимикається...")
+        threading.Timer(2, shutdown_pc).start()
+        return "ok"
 
     elif action == "reboot":
-        tg_send(token, chat_id, "🔄 ПК перезавантажується...")
-        time.sleep(1)
-        reboot_pc()
+        tg_send(g_token, g_chat_id, "🔄 ПК перезавантажується...")
+        threading.Timer(2, reboot_pc).start()
+        return "ok"
 
-# ─── Головний цикл ───────────────────────────────────────────────────────────
+    return "unknown_command"
+
+# ─── Запуск ngrok і реєстрація в боті ────────────────────────────────────────
+
+def start_ngrok() -> str:
+    """Запускає ngrok і повертає публічний URL"""
+    import subprocess
+
+    # Спочатку вбиваємо старий ngrok якщо є
+    try:
+        subprocess.run(["taskkill", "/F", "/IM", "ngrok.exe"],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
+    time.sleep(1)
+
+    # Запускаємо ngrok
+    try:
+        subprocess.Popen(
+            ["ngrok", "http", str(HTTP_PORT), "--log=stdout"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    except FileNotFoundError:
+        print("❌ ngrok не знайдено! Встанови ngrok з https://ngrok.com/download")
+        sys.exit(1)
+
+    # Чекаємо поки ngrok запуститься
+    print("⏳ Запуск ngrok...", end="", flush=True)
+    for _ in range(20):
+        time.sleep(1)
+        print(".", end="", flush=True)
+        try:
+            r = requests.get("http://localhost:4040/api/tunnels", timeout=2)
+            tunnels = r.json().get("tunnels", [])
+            for tunnel in tunnels:
+                if tunnel.get("proto") == "https":
+                    print()
+                    return tunnel["public_url"]
+        except Exception:
+            continue
+
+    print("\n❌ ngrok не запустився. Перевір чи встановлений і налаштований authtoken.")
+    sys.exit(1)
+
+def register_with_bot(token, chat_id, ngrok_url, code):
+    """Реєструє агента в боті через Telegram повідомлення"""
+    msg = f"/agent_connect {code} {PC_NAME} {ngrok_url}"
+    tg_send(token, chat_id, msg)
+
+# ─── Головна функція ─────────────────────────────────────────────────────────
 
 def main():
+    global g_token, g_chat_id
+
     token, telegram_id = setup()
-    chat_id = int(telegram_id)
+    g_token = token
+    g_chat_id = int(telegram_id)
 
     print("=" * 50)
     print("  PC Agent — Telegram PC Control")
@@ -322,85 +405,39 @@ def main():
         print("Код не введено!")
         return
 
-    print("\n📡 Підключення до бота...")
+    # Запускаємо HTTP сервер у фоні
+    server = HTTPServer(("0.0.0.0", HTTP_PORT), CommandHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    print(f"✅ HTTP сервер запущено на порту {HTTP_PORT}")
 
-    # Видаляємо webhook щоб не було конфліктів
-    tg_delete_webhook(token)
+    # Запускаємо ngrok
+    ngrok_url = start_ngrok()
+    print(f"🌐 Публічний URL: {ngrok_url}")
 
-    # Надсилаємо запит на підключення
-    tg_send(token, chat_id, f"/agent_connect {code} {PC_NAME}")
-    print("⏳ Очікую підтвердження...")
+    # Реєструємося в боті
+    print("📡 Реєстрація в боті...")
+    register_with_bot(token, g_chat_id, ngrok_url, code)
 
-    # Чекаємо відповідь від бота (максимум 20 секунд)
-    offset = None
-    start = time.time()
-    connected = False
-
-    while time.time() - start < 20:
-        updates = tg_get_updates(token, offset)
-        if not updates.get("ok"):
-            time.sleep(1)
-            continue
-
-        for upd in updates.get("result", []):
-            offset = upd["update_id"] + 1
-            msg = upd.get("message", {})
-            text = msg.get("text", "")
-            from_id = msg.get("from", {}).get("id", 0)
-
-            # Бот надіслав підтвердження
-            if text == "/agent_ok" and from_id != chat_id:
-                connected = True
-                break
-
-        if connected:
-            break
-        time.sleep(1)
-
-    if not connected:
-        print("❌ Таймаут! Перевір:")
-        print("  • Код правильний?")
-        print("  • Бот запущений?")
-        return
+    # Чекаємо підтвердження (перевіряємо чи бот відповів)
+    print("⏳ Очікую підтвердження від бота...")
+    time.sleep(3)
 
     print(f"\n✅ Підключено!")
     print(f"💻 ПК: {PC_NAME}")
+    print(f"🌐 URL: {ngrok_url}")
     print("\n🟢 Агент працює. Не закривай це вікно!")
     print("   Telegram → бот → 🖥 Комп'ютер → керуй ПК")
     print("\nCtrl+C для зупинки\n")
 
-    # Головний цикл — слухаємо команди
-    last_ping = time.time()
-
-    while True:
-        try:
-            # Пінг кожні 15 секунд
-            if time.time() - last_ping > 15:
-                tg_send(token, chat_id, "/agent_ping")
-                last_ping = time.time()
-
-            updates = tg_get_updates(token, offset)
-            if not updates.get("ok"):
-                time.sleep(2)
-                continue
-
-            for upd in updates.get("result", []):
-                offset = upd["update_id"] + 1
-                msg = upd.get("message", {})
-                text = msg.get("text", "")
-                from_id = msg.get("from", {}).get("id", 0)
-
-                # Команди тільки від бота (не від себе)
-                if text.startswith("/cmd ") and from_id != chat_id:
-                    action = text[5:]
-                    handle_command(token, chat_id, action)
-
-        except KeyboardInterrupt:
-            print("\n\n👋 Агент зупинено.")
-            break
-        except Exception as e:
-            print(f"Помилка: {e}")
-            time.sleep(3)
+    # Пінг кожні 20 секунд — щоб бот знав що ПК онлайн
+    try:
+        while True:
+            time.sleep(20)
+            tg_send(token, g_chat_id, f"/agent_ping {ngrok_url}")
+    except KeyboardInterrupt:
+        print("\n\n👋 Агент зупинено.")
+        server.shutdown()
 
 if __name__ == "__main__":
     main()
