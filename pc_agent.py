@@ -383,10 +383,18 @@ def start_ngrok() -> str:
     sys.exit(1)
 
 def register_with_bot(token, chat_id, ngrok_url, code):
-    """Реєструє агента в боті через Telegram повідомлення"""
-    msg = f"/agent_connect {code} {PC_NAME} {ngrok_url}"
-    tg_send(token, chat_id, msg)
-
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": f"/agent_connect {code} {PC_NAME} {ngrok_url}",
+                "disable_notification": True,
+            },
+            timeout=10
+        )
+    except Exception as e:
+        print(f"Помилка реєстрації: {e}")
 # ─── Головна функція ─────────────────────────────────────────────────────────
 
 def main():
