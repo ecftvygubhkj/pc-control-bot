@@ -595,9 +595,31 @@ async def set_lang(cb: CallbackQuery):
     await cb.message.answer(t(uid, "lang_changed"), reply_markup=main_keyboard(uid))
     await cb.answer()
 
+# ── Фоновий пінг агентів ─────────────────────────────────────────────────────
+async def ping_agents():
+    while True:
+        await asyncio.sleep(25)
+        for user_id, pc in list(connected_pcs.items()):
+            url = pc.get("url")
+            if not url:
+                continue
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{url}/ping",
+                        timeout=aiohttp.ClientTimeout(total=5)
+                    ) as resp:
+                        if resp.status == 200:
+                            connected_pcs[user_id]["last_seen"] = time.time()
+                        else:
+                            connected_pcs[user_id]["last_seen"] = 0
+            except Exception:
+                connected_pcs[user_id]["last_seen"] = 0
+
 # ── Запуск ────────────────────────────────────────────────────────────────────
 async def main():
     print("✅ Bot started!")
+    asyncio.create_task(ping_agents())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
