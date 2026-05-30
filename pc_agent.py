@@ -2,13 +2,12 @@
 pc_agent.py — запускається на ПК користувача
 
 Встанови бібліотеки:
-  pip install aiogram psutil pycaw comtypes Pillow pyautogui
+  pip install aiogram psutil pycaw comtypes Pillow pyautogui requests
 
 Запуск:
   python pc_agent.py
 """
 
-import asyncio
 import platform
 import socket
 import time
@@ -18,17 +17,10 @@ import json
 import ctypes
 import psutil
 import io
-from aiogram import Bot, Dispatcher
-from aiogram.types import Message, BufferedInputFile
-from aiogram.filters import Command
+import requests
 
 CONFIG_FILE = "config.json"
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # вшитий токен — люди не змінюють
-
 PC_NAME = socket.gethostname()
-USER_ID = None
-CONNECTED = False
-PING_INTERVAL = 15
 
 # ─── Конфіг ──────────────────────────────────────────────────────────────────
 
@@ -45,26 +37,81 @@ def save_config(data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f)
 
-def get_telegram_id():
+def setup():
     config = load_config()
-    if config.get("telegram_id"):
-        return int(config["telegram_id"])
 
-    print("\n" + "=" * 50)
-    print("  Перший запуск! Налаштування агента.")
-    print("=" * 50)
-    print("\n Щоб дізнатись свій Telegram ID:")
-    print("  1. Відкрий Telegram")
-    print("  2. Напиши боту @userinfobot команду /start")
-    print("  3. Скопіюй число 'Id: XXXXXXXXXX'\n")
-    tid = input("Введи свій Telegram ID: ").strip()
-    if not tid.isdigit():
-        print("Невірний ID!")
-        sys.exit(1)
-    config["telegram_id"] = tid
-    save_config(config)
-    print(f"ID збережено: {tid}\n")
-    return int(tid)
+    if not config.get("token"):
+        print("=" * 50)
+        print("  Перший запуск! Налаштування.")
+        print("=" * 50)
+        token = input("\nВведи токен бота: ").strip()
+        if not token:
+            print("Токен не введено!")
+            sys.exit(1)
+        config["token"] = token
+        save_config(config)
+        print("✅ Токен збережено!\n")
+
+    if not config.get("telegram_id"):
+        print("\nЩоб дізнатись свій Telegram ID:")
+        print("  Напиши @userinfobot в Telegram команду /start")
+        print("  Скопіюй число 'Id: XXXXXXXXXX'\n")
+        tid = input("Введи свій Telegram ID: ").strip()
+        if not tid.isdigit():
+            print("Невірний ID!")
+            sys.exit(1)
+        config["telegram_id"] = tid
+        save_config(config)
+        print("✅ ID збережено!\n")
+
+    return config["token"], config["telegram_id"]
+
+# ─── Telegram API (без aiogram, просто requests) ─────────────────────────────
+
+def tg_send(token, chat_id, text):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10
+        )
+    except Exception as e:
+        print(f"Помилка надсилання: {e}")
+
+def tg_send_photo(token, chat_id, photo_bytes, caption=""):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": caption},
+            files={"photo": ("screenshot.jpg", photo_bytes, "image/jpeg")},
+            timeout=15
+        )
+    except Exception as e:
+        print(f"Помилка надсилання фото: {e}")
+
+def tg_get_updates(token, offset=None):
+    try:
+        params = {"timeout": 20, "allowed_updates": ["message"]}
+        if offset:
+            params["offset"] = offset
+        r = requests.get(
+            f"https://api.telegram.org/bot{token}/getUpdates",
+            params=params,
+            timeout=25
+        )
+        return r.json()
+    except Exception:
+        return {"ok": False, "result": []}
+
+def tg_delete_webhook(token):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/deleteWebhook",
+            json={"drop_pending_updates": False},
+            timeout=10
+        )
+    except Exception:
+        pass
 
 # ─── Системні функції ─────────────────────────────────────────────────────────
 
@@ -83,7 +130,7 @@ def get_stats() -> str:
         if temps:
             for name, entries in temps.items():
                 if entries:
-                    temp_str = f"\n🌡 Темп: <b>{entries[0].current:.0f}°C</b>"
+                    temp_str = f"\n🌡 Темп: {entries[0].current:.0f}C"
                     break
     except Exception:
         pass
@@ -93,18 +140,18 @@ def get_stats() -> str:
         bat = psutil.sensors_battery()
         if bat:
             plug = "🔌" if bat.power_plugged else "🔋"
-            bat_str = f"\n{plug} Батарея: <b>{bat.percent:.0f}%</b>"
+            bat_str = f"\n{plug} Батарея: {bat.percent:.0f}%"
     except Exception:
         pass
 
     return (
-        f"💻 <b>Статистика ПК: {PC_NAME}</b>\n\n"
-        f"🔲 CPU: <b>{cpu}%</b>\n"
-        f"🧠 RAM: <b>{mem.used/1e9:.1f} / {mem.total/1e9:.1f} GB</b> ({mem.percent}%)\n"
-        f"💾 Диск: <b>{disk.used/1e9:.1f} / {disk.total/1e9:.1f} GB</b> ({disk.percent}%)\n"
-        f"🌐 ↓ <b>{net.bytes_recv/1e6:.1f} MB</b> ↑ <b>{net.bytes_sent/1e6:.1f} MB</b>"
+        f"💻 Статистика ПК: {PC_NAME}\n\n"
+        f"🔲 CPU: {cpu}%\n"
+        f"🧠 RAM: {mem.used/1e9:.1f} / {mem.total/1e9:.1f} GB ({mem.percent}%)\n"
+        f"💾 Диск: {disk.used/1e9:.1f} / {disk.total/1e9:.1f} GB ({disk.percent}%)\n"
+        f"🌐 ↓ {net.bytes_recv/1e6:.1f} MB ↑ {net.bytes_sent/1e6:.1f} MB"
         f"{temp_str}{bat_str}\n"
-        f"⚡ Аптайм: <b>{h}г {m}хв</b>"
+        f"⚡ Аптайм: {h}г {m}хв"
     )
 
 def get_volume() -> int:
@@ -196,201 +243,164 @@ def sleep_pc():
 def shutdown_pc():
     if platform.system() == "Windows":
         os.system("shutdown /s /t 3")
-    else:
-        os.system("shutdown -h now")
 
 def reboot_pc():
     if platform.system() == "Windows":
         os.system("shutdown /r /t 3")
-    else:
-        os.system("reboot")
 
-# ─── Бот і диспетчер ─────────────────────────────────────────────────────────
+# ─── Обробка команд ──────────────────────────────────────────────────────────
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-@dp.message(Command("cmd"))
-async def handle_cmd(message: Message):
-    global CONNECTED, USER_ID
-    if not CONNECTED:
-        return
-    if message.chat.id != USER_ID:
-        return
-
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 2:
-        return
-
-    action = parts[1]
-    data = parts[2] if len(parts) > 2 else ""
-
-    async def reply(text):
-        await message.answer(f"/agent_response {text}")
+def handle_command(token, chat_id, action):
+    action = action.strip()
+    print(f"  Команда: {action}")
 
     if action == "stats":
-        await reply(get_stats())
+        tg_send(token, chat_id, get_stats())
 
     elif action == "get_volume":
-        await reply(str(get_volume()))
+        tg_send(token, chat_id, f"VOLUME:{get_volume()}")
 
     elif action == "vol_up":
         vol = get_volume()
         set_volume(vol + 10)
-        await reply(str(min(vol + 10, 100)))
+        tg_send(token, chat_id, f"VOLUME:{min(vol+10, 100)}")
 
     elif action == "vol_down":
         vol = get_volume()
         set_volume(vol - 10)
-        await reply(str(max(vol - 10, 0)))
+        tg_send(token, chat_id, f"VOLUME:{max(vol-10, 0)}")
 
     elif action == "vol_mute":
         toggle_mute()
-        await reply(str(get_volume()))
+        tg_send(token, chat_id, f"VOLUME:{get_volume()}")
 
     elif action == "music_playpause":
         media_key(0xB3)
-        await reply("ok")
 
     elif action == "music_next":
         media_key(0xB0)
-        await reply("ok")
 
     elif action == "music_prev":
         media_key(0xB1)
-        await reply("ok")
 
     elif action == "mic_toggle":
-        await reply(toggle_mic())
+        tg_send(token, chat_id, toggle_mic())
 
     elif action == "screenshot":
-        img_data = take_screenshot()
-        if img_data:
-            await bot.send_photo(
-                chat_id=USER_ID,
-                photo=BufferedInputFile(img_data, filename="screenshot.jpg"),
-                caption=f"📸 {PC_NAME}"
-            )
-        await reply("ok")
+        img = take_screenshot()
+        if img:
+            tg_send_photo(token, chat_id, img, f"📸 {PC_NAME}")
 
     elif action == "lock":
         lock_screen()
-        await reply("ok")
 
     elif action == "sleep":
-        await reply("ok")
-        await asyncio.sleep(1)
         sleep_pc()
 
     elif action == "shutdown":
-        await reply("ok")
-        await asyncio.sleep(1)
+        tg_send(token, chat_id, "🔴 ПК вимикається...")
+        time.sleep(1)
         shutdown_pc()
 
     elif action == "reboot":
-        await reply("ok")
-        await asyncio.sleep(1)
+        tg_send(token, chat_id, "🔄 ПК перезавантажується...")
+        time.sleep(1)
         reboot_pc()
 
-@dp.message(Command("agent_ok"))
-async def on_connected(message: Message):
-    global CONNECTED
-    if message.chat.id != USER_ID:
-        return
-    CONNECTED = True
-    print(f"\n✅ Підключено до бота!")
-    print(f"💻 ПК: {PC_NAME}")
-    print("\n🟢 Агент працює. Не закривай це вікно!")
-    print("   Telegram → бот → 🖥 Комп'ютер → керуй ПК")
-    print("\nCtrl+C для зупинки\n")
+# ─── Головний цикл ───────────────────────────────────────────────────────────
 
-# ─── Heartbeat ────────────────────────────────────────────────────────────────
+def main():
+    token, telegram_id = setup()
+    chat_id = int(telegram_id)
 
-async def heartbeat_loop():
-    while True:
-        await asyncio.sleep(PING_INTERVAL)
-        if CONNECTED and USER_ID:
-            try:
-                await bot.send_message(USER_ID, f"/agent_ping")
-            except Exception:
-                pass
-
-# ─── Головна функція ──────────────────────────────────────────────────────────
-
-async def main():
-    global USER_ID
-
-    TELEGRAM_ID = get_telegram_id()
-    USER_ID = TELEGRAM_ID
-
-    print("\n" + "=" * 50)
+    print("=" * 50)
     print("  PC Agent — Telegram PC Control")
     print("=" * 50)
 
     code = input("\n🔑 Введи код підключення з бота: ").strip().upper()
     if not code:
-        print("❌ Код не введено!")
+        print("Код не введено!")
         return
 
-    print(f"\n📡 Підключення...")
+    print("\n📡 Підключення до бота...")
 
-    try:
-        await bot.send_message(USER_ID, f"/agent_connect {code} {PC_NAME}")
-    except Exception as e:
-        print(f"❌ Помилка: {e}")
-        print("\nПеревір:")
-        print("  • Токен бота правильний (в коді)")
-        print("  • Ти писав /start боту в Telegram?")
-        print("  • Telegram ID правильний?")
-        # Скидаємо ID щоб можна було ввести новий
-        config = load_config()
-        config.pop("telegram_id", None)
-        save_config(config)
-        return
+    # Видаляємо webhook щоб не було конфліктів
+    tg_delete_webhook(token)
 
-    print("⏳ Очікую підтвердження від бота...")
+    # Надсилаємо запит на підключення
+    tg_send(token, chat_id, f"/agent_connect {code} {PC_NAME}")
+    print("⏳ Очікую підтвердження...")
 
-    connected_event = asyncio.Event()
+    # Чекаємо відповідь від бота (максимум 20 секунд)
+    offset = None
+    start = time.time()
+    connected = False
 
-    @dp.message(Command("agent_ok"))
-    async def _on_ok(msg: Message):
-        global CONNECTED
-        if msg.chat.id != USER_ID:
-            return
-        CONNECTED = True
-        connected_event.set()
-        print(f"\n✅ Підключено!")
-        print(f"💻 ПК: {PC_NAME}")
-        print("\n🟢 Агент працює. Не закривай це вікно!")
-        print("   Telegram → бот → 🖥 Комп'ютер → керуй ПК")
-        print("\nCtrl+C для зупинки\n")
+    while time.time() - start < 20:
+        updates = tg_get_updates(token, offset)
+        if not updates.get("ok"):
+            time.sleep(1)
+            continue
 
-    polling_task = asyncio.create_task(dp.start_polling(bot, handle_as_tasks=True))
+        for upd in updates.get("result", []):
+            offset = upd["update_id"] + 1
+            msg = upd.get("message", {})
+            text = msg.get("text", "")
+            from_id = msg.get("from", {}).get("id", 0)
 
-    try:
-        await asyncio.wait_for(connected_event.wait(), timeout=20)
-    except asyncio.TimeoutError:
+            # Бот надіслав підтвердження
+            if text == "/agent_ok" and from_id != chat_id:
+                connected = True
+                break
+
+        if connected:
+            break
+        time.sleep(1)
+
+    if not connected:
         print("❌ Таймаут! Перевір:")
         print("  • Код правильний?")
-        print("  • Код не прострочений? (дійсний 24г)")
-        print("  • Бот запущений на Railway?")
-        polling_task.cancel()
+        print("  • Бот запущений?")
         return
 
-    heartbeat_task = asyncio.create_task(heartbeat_loop())
+    print(f"\n✅ Підключено!")
+    print(f"💻 ПК: {PC_NAME}")
+    print("\n🟢 Агент працює. Не закривай це вікно!")
+    print("   Telegram → бот → 🖥 Комп'ютер → керуй ПК")
+    print("\nCtrl+C для зупинки\n")
 
-    try:
-        await polling_task
-    except asyncio.CancelledError:
-        pass
-    finally:
-        heartbeat_task.cancel()
+    # Головний цикл — слухаємо команди
+    last_ping = time.time()
+
+    while True:
+        try:
+            # Пінг кожні 15 секунд
+            if time.time() - last_ping > 15:
+                tg_send(token, chat_id, "/agent_ping")
+                last_ping = time.time()
+
+            updates = tg_get_updates(token, offset)
+            if not updates.get("ok"):
+                time.sleep(2)
+                continue
+
+            for upd in updates.get("result", []):
+                offset = upd["update_id"] + 1
+                msg = upd.get("message", {})
+                text = msg.get("text", "")
+                from_id = msg.get("from", {}).get("id", 0)
+
+                # Команди тільки від бота (не від себе)
+                if text.startswith("/cmd ") and from_id != chat_id:
+                    action = text[5:]
+                    handle_command(token, chat_id, action)
+
+        except KeyboardInterrupt:
+            print("\n\n👋 Агент зупинено.")
+            break
+        except Exception as e:
+            print(f"Помилка: {e}")
+            time.sleep(3)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n\n👋 Агент зупинено.")
-    except Exception as e:
-        print(f"\n❌ Помилка: {e}")
-        input("\nНатисни Enter щоб закрити...")
+    main()
