@@ -9,7 +9,7 @@ from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardB
 from aiogram.filters import Command
 
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_ТУТ")
+BOT_TOKEN = ("ВАШ_ТОКЕН_ТУТ")
 
 # ── Переклади ──────────────────────────────────────────────────────────────────
 TEXTS = {
@@ -408,20 +408,28 @@ async def agent_connect(message: Message):
 # ── API для агента: пінг (heartbeat) ─────────────────────────────────────────
 @dp.message(Command("agent_ping"))
 async def agent_ping(message: Message):
-    """Пінг від агента — агент пише з акаунту user_id"""
     user_id = message.from_user.id
     if user_id in connected_pcs:
         connected_pcs[user_id]["last_seen"] = time.time()
+        print(f"Ping від {user_id}")
 
 # ── API для агента: відповідь на команду ─────────────────────────────────────
 @dp.message(Command("agent_response"))
 async def agent_response(message: Message):
-    """Відповідь від агента на команду — агент пише з акаунту user_id"""
-    parts = message.text.split(maxsplit=1)
+    pass  # не використовується більше
+
+@dp.message(F.text.startswith("VOLUME:"))
+async def agent_volume_response(message: Message):
     user_id = message.from_user.id
-    data = parts[1] if len(parts) > 1 else ""
+    vol = message.text.split(":")[1]
     if user_id in pending_responses:
-        await pending_responses[user_id].put({"type": "text", "data": data})
+        await pending_responses[user_id].put({"type": "text", "data": vol})
+
+@dp.message(F.func(lambda m: m.from_user and m.from_user.id in connected_pcs and not m.text.startswith("/")))
+async def agent_text_response(message: Message):
+    user_id = message.from_user.id
+    if user_id in pending_responses:
+        await pending_responses[user_id].put({"type": "text", "data": message.text})
 
 # ── Відправити команду до агента ─────────────────────────────────────────────
 async def send_command_to_pc(user_id, action, data=""):
@@ -431,8 +439,9 @@ async def send_command_to_pc(user_id, action, data=""):
     pending_responses[user_id] = asyncio.Queue()
     
     try:
-        await bot.send_message(user_id, f"/cmd {action} {data}".strip())
-        response = await asyncio.wait_for(pending_responses[user_id].get(), timeout=10)
+        cmd = f"/cmd {action} {data}".strip()
+        await bot.send_message(user_id, cmd)
+        response = await asyncio.wait_for(pending_responses[user_id].get(), timeout=15)
         return response
     except asyncio.TimeoutError:
         return None
