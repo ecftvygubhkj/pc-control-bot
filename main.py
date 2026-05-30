@@ -200,15 +200,21 @@ def format_time(ts):
 
 # ── Генерація коду ────────────────────────────────────────────────────────────
 def generate_code(user_id):
-    # Видалити старий код якщо є
+    # Повернути існуючий діючий код
+    for c, v in list(user_codes.items()):
+        if v["user_id"] == user_id and time.time() < v["expires"]:
+            return c
+
+    # Видалити прострочений
     to_delete = [c for c, v in user_codes.items() if v["user_id"] == user_id]
     for c in to_delete:
         del user_codes[c]
-    
-    code = secrets.token_hex(3).upper()  # Наприклад: A3F2B1
+
+    # Генеруємо новий
+    code = secrets.token_hex(3).upper()
     user_codes[code] = {
         "user_id": user_id,
-        "expires": time.time() + 86400  # 24 години
+        "expires": time.time() + 86400
     }
     return code
 
@@ -379,12 +385,10 @@ async def agent_connect(message: Message):
         await message.answer("ERROR:invalid_code")
         return
     
-    # Зберігаємо підключення
+    # Зберігаємо підключення (агент пише напряму з чату user_id)
     connected_pcs[user_id] = {
         "name": pc_name,
         "last_seen": time.time(),
-        "agent_chat_id": message.chat.id,
-        "agent_user_id": message.from_user.id,
     }
     
     # Видаляємо код після використання
@@ -392,62 +396,42 @@ async def agent_connect(message: Message):
     for c in to_del:
         del user_codes[c]
     
-    await message.answer(f"OK:connected:{user_id}")
-    
-    # Сповіщаємо користувача
-    try:
-        await bot.send_message(
-            user_id,
-            f"🟢 <b>ПК підключено!</b>\n💻 {pc_name}",
-            parse_mode="HTML",
-            reply_markup=main_keyboard(user_id)
-        )
-    except Exception:
-        pass
+    # Надсилаємо підтвердження агенту і користувачу
+    await bot.send_message(user_id, "/agent_ok")
+    await bot.send_message(
+        user_id,
+        f"🟢 <b>ПК підключено!</b>\n💻 {pc_name}",
+        parse_mode="HTML",
+        reply_markup=main_keyboard(user_id)
+    )
 
 # ── API для агента: пінг (heartbeat) ─────────────────────────────────────────
 @dp.message(Command("agent_ping"))
 async def agent_ping(message: Message):
-    """Пінг від агента щоб показати що ПК онлайн"""
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return
-    try:
-        user_id = int(parts[1])
-        if user_id in connected_pcs:
-            connected_pcs[user_id]["last_seen"] = time.time()
-            await message.answer("OK:pong")
-    except Exception:
-        pass
+    """Пінг від агента — агент пише з акаунту user_id"""
+    user_id = message.from_user.id
+    if user_id in connected_pcs:
+        connected_pcs[user_id]["last_seen"] = time.time()
 
 # ── API для агента: відповідь на команду ─────────────────────────────────────
 @dp.message(Command("agent_response"))
 async def agent_response(message: Message):
-    """Відповідь від агента на команду"""
-    # Формат: /agent_response USER_ID TYPE DATA
-    parts = message.text.split(maxsplit=3)
-    if len(parts) < 4:
-        return
-    try:
-        user_id = int(parts[1])
-        resp_type = parts[2]
-        data = parts[3]
-        
-        if user_id in pending_responses:
-            await pending_responses[user_id].put({"type": resp_type, "data": data})
-    except Exception:
-        pass
+    """Відповідь від агента на команду — агент пише з акаунту user_id"""
+    parts = message.text.split(maxsplit=1)
+    user_id = message.from_user.id
+    data = parts[1] if len(parts) > 1 else ""
+    if user_id in pending_responses:
+        await pending_responses[user_id].put({"type": "text", "data": data})
 
 # ── Відправити команду до агента ─────────────────────────────────────────────
 async def send_command_to_pc(user_id, action, data=""):
     if not is_pc_online(user_id):
         return None
     
-    agent_chat_id = connected_pcs[user_id]["agent_chat_id"]
     pending_responses[user_id] = asyncio.Queue()
     
     try:
-        await bot.send_message(agent_chat_id, f"/cmd {user_id} {action} {data}".strip())
+        await bot.send_message(user_id, f"/cmd {action} {data}".strip())
         response = await asyncio.wait_for(pending_responses[user_id].get(), timeout=10)
         return response
     except asyncio.TimeoutError:
