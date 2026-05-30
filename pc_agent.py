@@ -382,19 +382,11 @@ def start_ngrok() -> str:
     print("\n❌ ngrok не запустився. Перевір чи встановлений і налаштований authtoken.")
     sys.exit(1)
 
-def register_with_bot(token, chat_id, ngrok_url, code):
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": f"/agent_connect {code} {PC_NAME} {ngrok_url}",
-                "disable_notification": True,
-            },
-            timeout=10
-        )
-    except Exception as e:
-        print(f"Помилка реєстрації: {e}")
+
+
+
+
+
 # ─── Головна функція ─────────────────────────────────────────────────────────
 
 def main():
