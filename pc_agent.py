@@ -383,7 +383,21 @@ def start_ngrok() -> str:
     sys.exit(1)
 
 
-
+def register_with_bot(token, chat_id, ngrok_url, code):
+    """Реєструє агента через HTTP — без повідомлень в чаті"""
+    try:
+        bot_url = "https://pc-control-bot.fly.dev"
+        r = requests.post(
+            f"{bot_url}/register",
+            json={"code": code, "pc_name": PC_NAME, "url": ngrok_url, "user_id": chat_id},
+            timeout=10
+        )
+        if r.status_code == 200 and r.json().get("ok"):
+            print("✅ Зареєстровано!")
+        else:
+            print(f"⚠️ Помилка: {r.text}")
+    except Exception as e:
+        print(f"Помилка реєстрації: {e}")
 
 
 
