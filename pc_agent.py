@@ -430,11 +430,10 @@ def main():
     print("   Telegram → бот → 🖥 Комп'ютер → керуй ПК")
     print("\nCtrl+C для зупинки\n")
 
-    # Пінг кожні 20 секунд — щоб бот знав що ПК онлайн
+    # Просто тримаємо сервер живим — бот сам пінгує агента через HTTP
     try:
         while True:
-            time.sleep(20)
-            tg_send(token, g_chat_id, f"/agent_ping {ngrok_url}")
+            time.sleep(60)
     except KeyboardInterrupt:
         print("\n\n👋 Агент зупинено.")
         server.shutdown()
