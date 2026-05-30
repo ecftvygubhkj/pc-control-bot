@@ -4,6 +4,7 @@ import json
 import secrets
 import time
 import aiohttp
+from aiohttp import web
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -390,58 +391,6 @@ async def show_code(cb: CallbackQuery):
     )
     await cb.answer()
 
-# ── Реєстрація агента: /agent_connect CODE PC_NAME NGROK_URL ─────────────────
-@dp.message(Command("agent_connect"))
-async def agent_connect(message: Message):
-    parts = message.text.split(maxsplit=3)
-    # /agent_connect CODE PC_NAME https://xxxx.ngrok.io
-    if len(parts) < 4:
-        await message.answer("ERROR:invalid_format")
-        return
-
-    code = parts[1].upper()
-    pc_name = parts[2]
-    ngrok_url = parts[3].strip()
-
-    user_id = get_user_by_code(code)
-    if not user_id:
-        await message.answer("ERROR:invalid_code")
-        return
-
-    # Зберігаємо підключення з ngrok URL
-    connected_pcs[user_id] = {
-        "name": pc_name,
-        "last_seen": time.time(),
-        "url": ngrok_url,
-    }
-
-    # Видаляємо використаний код
-    to_del = [c for c, v in user_codes.items() if v["user_id"] == user_id]
-    for c in to_del:
-        del user_codes[c]
-
-    print(f"✅ ПК підключено: {pc_name} | {ngrok_url} | user_id={user_id}")
-
-    # Повідомляємо користувача
-    await bot.send_message(
-        user_id,
-        t(user_id, "pc_connected_notify", name=pc_name),
-        parse_mode="HTML",
-        reply_markup=main_keyboard(user_id)
-    )
-
-# ── Пінг від агента: /agent_ping NGROK_URL ───────────────────────────────────
-@dp.message(Command("agent_ping"))
-async def agent_ping(message: Message):
-    parts = message.text.split(maxsplit=1)
-    user_id = message.from_user.id
-    if user_id in connected_pcs:
-        connected_pcs[user_id]["last_seen"] = time.time()
-        # Оновлюємо URL якщо передано (ngrok URL може змінитись)
-        if len(parts) == 2:
-            connected_pcs[user_id]["url"] = parts[1].strip()
-        print(f"📡 Ping від {connected_pcs[user_id]['name']}")
-
 # ── Назад до меню ПК ─────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "pc_back")
 async def pc_back(cb: CallbackQuery):
@@ -595,6 +544,47 @@ async def set_lang(cb: CallbackQuery):
     await cb.message.answer(t(uid, "lang_changed"), reply_markup=main_keyboard(uid))
     await cb.answer()
 
+# ── HTTP endpoint для реєстрації агента (без Telegram повідомлень) ────────────
+async def handle_register(request):
+    try:
+        data = await request.json()
+        code = data.get("code", "").upper()
+        pc_name = data.get("pc_name", "")
+        ngrok_url = data.get("url", "")
+
+        user_id = get_user_by_code(code)
+        if not user_id:
+            return web.json_response({"ok": False, "error": "invalid_code"}, status=400)
+
+        connected_pcs[user_id] = {
+            "name": pc_name,
+            "last_seen": time.time(),
+            "url": ngrok_url,
+        }
+
+        to_del = [c for c, v in user_codes.items() if v["user_id"] == user_id]
+        for c in to_del:
+            del user_codes[c]
+
+        print(f"✅ ПК підключено: {pc_name} | {ngrok_url} | user_id={user_id}")
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+async def handle_ping(request):
+    """Агент пінгує бота щоб оновити last_seen"""
+    try:
+        data = await request.json()
+        user_id = int(data.get("user_id", 0))
+        ngrok_url = data.get("url", "")
+        if user_id in connected_pcs:
+            connected_pcs[user_id]["last_seen"] = time.time()
+            if ngrok_url:
+                connected_pcs[user_id]["url"] = ngrok_url
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
 # ── Фоновий пінг агентів ─────────────────────────────────────────────────────
 async def ping_agents():
     while True:
@@ -619,6 +609,18 @@ async def ping_agents():
 # ── Запуск ────────────────────────────────────────────────────────────────────
 async def main():
     print("✅ Bot started!")
+
+    # HTTP сервер для реєстрації агентів
+    app = web.Application()
+    app.router.add_post("/register", handle_register)
+    app.router.add_post("/agent_ping", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"✅ HTTP сервер запущено на порту {port}")
+
     asyncio.create_task(ping_agents())
     await dp.start_polling(bot)
 
