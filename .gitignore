@@ -1,0 +1,46 @@
+# Токен і секрети — НІКОЛИ не завантажуй на GitHub!
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+wheels/
+pip-wheel-metadata/
+*.so
+
+# Віртуальне середовище
+venv/
+env/
+.venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Логи
+*.log
+logs/
+
+# Тимчасові файли
+*.tmp
+*.temp
