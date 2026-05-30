@@ -3,11 +3,13 @@ import os
 import json
 import secrets
 import time
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 
-BOT_TOKEN = "8850935816:AAFGqfuMG7WEWVyFqFwI5Sw-lVMwC_GGSfI"
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_ТУТ")
 
 # ── Переклади ──────────────────────────────────────────────────────────────────
 TEXTS = {
@@ -25,13 +27,14 @@ TEXTS = {
             "🔑 <b>Твій код підключення:</b>\n\n"
             "<code>{code}</code>\n\n"
             "📋 <b>Інструкція:</b>\n\n"
-            "1. Встанови Python якщо ще не встановлено\n"
+            "1. Встанови <a href='https://python.org/downloads'>Python</a> якщо ще не встановлено\n\n"
             "2. Встанови бібліотеки в терміналі:\n"
-            "<code>pip install aiogram psutil pycaw comtypes Pillow</code>\n\n"
-            "3. Завантаж файл <b>pc_agent.py</b>\n\n"
-            "4. Запусти:\n"
+            "<code>pip install aiogram psutil pycaw comtypes Pillow pyautogui</code>\n\n"
+            "3. <a href='https://raw.githubusercontent.com/ecftvygubhkj/pc-control-bot/main/pc_agent.py'>⬇️ Завантаж pc_agent.py</a>\n\n"
+            "4. Відкрий файл і встав токен бота в рядок <code>BOT_TOKEN</code>\n\n"
+            "5. Запусти:\n"
             "<code>python pc_agent.py</code>\n\n"
-            "5. Введи код <code>{code}</code> коли запитає\n\n"
+            "6. Введи код <code>{code}</code> коли запитає\n\n"
             "✅ ПК з'явиться онлайн автоматично!\n\n"
             "⏳ Код дійсний 24 години."
         ),
@@ -103,13 +106,14 @@ TEXTS = {
             "🔑 <b>Your connection code:</b>\n\n"
             "<code>{code}</code>\n\n"
             "📋 <b>Instructions:</b>\n\n"
-            "1. Install Python if not already installed\n"
+            "1. Install <a href='https://python.org/downloads'>Python</a> if not already installed\n\n"
             "2. Install libraries in terminal:\n"
-            "<code>pip install aiogram psutil pycaw comtypes Pillow</code>\n\n"
-            "3. Download <b>pc_agent.py</b>\n\n"
-            "4. Run:\n"
+            "<code>pip install aiogram psutil pycaw comtypes Pillow pyautogui</code>\n\n"
+            "3. <a href='https://raw.githubusercontent.com/ecftvygubhkj/pc-control-bot/main/pc_agent.py'>⬇️ Download pc_agent.py</a>\n\n"
+            "4. Open the file and insert your bot token in the <code>BOT_TOKEN</code> line\n\n"
+            "5. Run:\n"
             "<code>python pc_agent.py</code>\n\n"
-            "5. Enter code <code>{code}</code> when asked\n\n"
+            "6. Enter code <code>{code}</code> when asked\n\n"
             "✅ PC will appear online automatically!\n\n"
             "⏳ Code is valid for 24 hours."
         ),
