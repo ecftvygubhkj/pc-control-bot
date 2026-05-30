@@ -3,13 +3,14 @@ import os
 import json
 import secrets
 import time
+import aiohttp
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 
 load_dotenv()
-BOT_TOKEN = ("ВАШ_ТОКЕН_ТУТ")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_ТУТ")
 
 # ── Переклади ──────────────────────────────────────────────────────────────────
 TEXTS = {
@@ -28,13 +29,13 @@ TEXTS = {
             "<code>{code}</code>\n\n"
             "📋 <b>Інструкція:</b>\n\n"
             "1. Встанови <a href='https://python.org/downloads'>Python</a> якщо ще не встановлено\n\n"
-            "2. Встанови бібліотеки в терміналі:\n"
-            "<code>pip install aiogram psutil pycaw comtypes Pillow pyautogui</code>\n\n"
-            "3. <a href='https://raw.githubusercontent.com/ecftvygubhkj/pc-control-bot/main/pc_agent.py'>⬇️ Завантаж pc_agent.py</a>\n\n"
-            "4. Відкрий файл і встав токен бота в рядок <code>BOT_TOKEN</code>\n\n"
+            "2. Встанови бібліотеки:\n"
+            "<code>pip install psutil pycaw comtypes Pillow pyautogui requests</code>\n\n"
+            "3. Встанови <a href='https://ngrok.com/download'>ngrok</a> і налаштуй authtoken\n\n"
+            "4. <a href='https://raw.githubusercontent.com/ecftvygubhkj/pc-control-bot/main/pc_agent.py'>⬇️ Завантаж pc_agent.py</a>\n\n"
             "5. Запусти:\n"
             "<code>python pc_agent.py</code>\n\n"
-            "6. Введи код <code>{code}</code> коли запитає\n\n"
+            "6. Введи токен бота, свій Telegram ID, потім код <code>{code}</code>\n\n"
             "✅ ПК з'явиться онлайн автоматично!\n\n"
             "⏳ Код дійсний 24 години."
         ),
@@ -55,7 +56,7 @@ TEXTS = {
         "about_btn": "ℹ️ Про бота",
         "about_text": (
             "🤖 <b>PC Control Bot</b>\n\n"
-            "Версія: 2.0\n"
+            "Версія: 3.0\n"
             "Керуй своїм ПК прямо з Telegram!\n\n"
             "<b>Функції:</b>\n"
             "• 📊 Статистика (CPU, RAM, диск, мережа)\n"
@@ -91,6 +92,7 @@ TEXTS = {
         "btn_yes_reboot": "✅ Так, перезавантажити",
         "disconnected_pc": "🔴 ПК відключився",
         "new_code": "🔄 Новий код",
+        "pc_connected_notify": "🟢 <b>ПК підключено!</b>\n💻 {name}",
     },
     "en": {
         "welcome": (
@@ -106,14 +108,14 @@ TEXTS = {
             "🔑 <b>Your connection code:</b>\n\n"
             "<code>{code}</code>\n\n"
             "📋 <b>Instructions:</b>\n\n"
-            "1. Install <a href='https://python.org/downloads'>Python</a> if not already installed\n\n"
-            "2. Install libraries in terminal:\n"
-            "<code>pip install aiogram psutil pycaw comtypes Pillow pyautogui</code>\n\n"
-            "3. <a href='https://raw.githubusercontent.com/ecftvygubhkj/pc-control-bot/main/pc_agent.py'>⬇️ Download pc_agent.py</a>\n\n"
-            "4. Open the file and insert your bot token in the <code>BOT_TOKEN</code> line\n\n"
+            "1. Install <a href='https://python.org/downloads'>Python</a> if not installed\n\n"
+            "2. Install libraries:\n"
+            "<code>pip install psutil pycaw comtypes Pillow pyautogui requests</code>\n\n"
+            "3. Install <a href='https://ngrok.com/download'>ngrok</a> and set up authtoken\n\n"
+            "4. <a href='https://raw.githubusercontent.com/ecftvygubhkj/pc-control-bot/main/pc_agent.py'>⬇️ Download pc_agent.py</a>\n\n"
             "5. Run:\n"
             "<code>python pc_agent.py</code>\n\n"
-            "6. Enter code <code>{code}</code> when asked\n\n"
+            "6. Enter bot token, your Telegram ID, then code <code>{code}</code>\n\n"
             "✅ PC will appear online automatically!\n\n"
             "⏳ Code is valid for 24 hours."
         ),
@@ -134,7 +136,7 @@ TEXTS = {
         "about_btn": "ℹ️ About bot",
         "about_text": (
             "🤖 <b>PC Control Bot</b>\n\n"
-            "Version: 2.0\n"
+            "Version: 3.0\n"
             "Control your PC directly from Telegram!\n\n"
             "<b>Features:</b>\n"
             "• 📊 Statistics (CPU, RAM, disk, network)\n"
@@ -170,15 +172,14 @@ TEXTS = {
         "btn_yes_reboot": "✅ Yes, reboot",
         "disconnected_pc": "🔴 PC disconnected",
         "new_code": "🔄 New code",
+        "pc_connected_notify": "🟢 <b>PC connected!</b>\n💻 {name}",
     }
 }
 
 # ── Стан ──────────────────────────────────────────────────────────────────────
-user_lang = {}          # user_id -> "uk" / "en"
-user_codes = {}         # code -> {"user_id": int, "expires": float}
-connected_pcs = {}      # user_id -> {"name": str, "last_seen": float, "chat_id": int}
-pending_commands = {}   # user_id -> {"action": str, "data": any}
-pending_responses = {}  # user_id -> asyncio.Queue
+user_lang = {}      # user_id -> "uk" / "en"
+user_codes = {}     # code -> {"user_id": int, "expires": float}
+connected_pcs = {}  # user_id -> {"name": str, "last_seen": float, "url": str}
 
 def t(user_id, key, **kwargs):
     lang = user_lang.get(user_id, "uk")
@@ -191,7 +192,7 @@ def is_pc_online(user_id):
     if user_id not in connected_pcs:
         return False
     last = connected_pcs[user_id]["last_seen"]
-    return (time.time() - last) < 30  # 30 секунд таймаут
+    return (time.time() - last) < 45  # 45 секунд таймаут
 
 def format_time(ts):
     import datetime
@@ -227,6 +228,32 @@ def get_user_by_code(code):
         return None
     return data["user_id"]
 
+# ── HTTP запит до агента ──────────────────────────────────────────────────────
+async def send_to_agent(user_id: int, action: str) -> str | None:
+    """Надсилає HTTP POST до агента і повертає результат"""
+    if not is_pc_online(user_id):
+        return None
+
+    url = connected_pcs[user_id]["url"]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{url}/cmd",
+                json={"action": action},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("result", "ok")
+                return None
+    except Exception as e:
+        print(f"[send_to_agent] Помилка: {e}")
+        # Якщо не відповів — помічаємо як офлайн
+        if user_id in connected_pcs:
+            connected_pcs[user_id]["last_seen"] = 0
+        return None
+
 # ── Клавіатури ────────────────────────────────────────────────────────────────
 def main_keyboard(user_id):
     return ReplyKeyboardMarkup(
@@ -244,7 +271,6 @@ def pc_offline_keyboard(user_id):
     ]])
 
 def pc_online_keyboard(user_id):
-    lang = user_lang.get(user_id, "uk")
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text=t(user_id, "btn_stats"), callback_data="pc_stats"),
@@ -288,20 +314,16 @@ def music_keyboard(user_id):
     ])
 
 def shutdown_keyboard(user_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=t(user_id, "btn_yes"), callback_data="shutdown_yes"),
-            InlineKeyboardButton(text=t(user_id, "btn_cancel"), callback_data="pc_back"),
-        ]
-    ])
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=t(user_id, "btn_yes"), callback_data="shutdown_yes"),
+        InlineKeyboardButton(text=t(user_id, "btn_cancel"), callback_data="pc_back"),
+    ]])
 
 def reboot_keyboard(user_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=t(user_id, "btn_yes_reboot"), callback_data="reboot_yes"),
-            InlineKeyboardButton(text=t(user_id, "btn_cancel"), callback_data="pc_back"),
-        ]
-    ])
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=t(user_id, "btn_yes_reboot"), callback_data="reboot_yes"),
+        InlineKeyboardButton(text=t(user_id, "btn_cancel"), callback_data="pc_back"),
+    ]])
 
 def settings_keyboard(user_id):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -363,90 +385,62 @@ async def show_code(cb: CallbackQuery):
     code = generate_code(uid)
     await cb.message.answer(
         t(uid, "your_code", code=code),
-        parse_mode="HTML"
+        parse_mode="HTML",
+        disable_web_page_preview=True
     )
     await cb.answer()
 
-# ── API для агента: реєстрація ПК ─────────────────────────────────────────────
+# ── Реєстрація агента: /agent_connect CODE PC_NAME NGROK_URL ─────────────────
 @dp.message(Command("agent_connect"))
 async def agent_connect(message: Message):
-    """Команда від pc_agent.py для реєстрації"""
-    parts = message.text.split(maxsplit=2)
-    # /agent_connect CODE PC_NAME
-    if len(parts) < 3:
+    parts = message.text.split(maxsplit=3)
+    # /agent_connect CODE PC_NAME https://xxxx.ngrok.io
+    if len(parts) < 4:
         await message.answer("ERROR:invalid_format")
         return
-    
+
     code = parts[1].upper()
     pc_name = parts[2]
-    
+    ngrok_url = parts[3].strip()
+
     user_id = get_user_by_code(code)
     if not user_id:
         await message.answer("ERROR:invalid_code")
         return
-    
-    # Зберігаємо підключення (агент пише напряму з чату user_id)
+
+    # Зберігаємо підключення з ngrok URL
     connected_pcs[user_id] = {
         "name": pc_name,
         "last_seen": time.time(),
+        "url": ngrok_url,
     }
-    
-    # Видаляємо код після використання
+
+    # Видаляємо використаний код
     to_del = [c for c, v in user_codes.items() if v["user_id"] == user_id]
     for c in to_del:
         del user_codes[c]
-    
-    # Надсилаємо підтвердження агенту і користувачу
-    await bot.send_message(user_id, "/agent_ok")
+
+    print(f"✅ ПК підключено: {pc_name} | {ngrok_url} | user_id={user_id}")
+
+    # Повідомляємо користувача
     await bot.send_message(
         user_id,
-        f"🟢 <b>ПК підключено!</b>\n💻 {pc_name}",
+        t(user_id, "pc_connected_notify", name=pc_name),
         parse_mode="HTML",
         reply_markup=main_keyboard(user_id)
     )
 
-# ── API для агента: пінг (heartbeat) ─────────────────────────────────────────
+# ── Пінг від агента: /agent_ping NGROK_URL ───────────────────────────────────
 @dp.message(Command("agent_ping"))
 async def agent_ping(message: Message):
+    parts = message.text.split(maxsplit=1)
     user_id = message.from_user.id
     if user_id in connected_pcs:
         connected_pcs[user_id]["last_seen"] = time.time()
-        print(f"Ping від {user_id}")
-
-# ── API для агента: відповідь на команду ─────────────────────────────────────
-@dp.message(Command("agent_response"))
-async def agent_response(message: Message):
-    pass  # не використовується більше
-
-@dp.message(F.text.startswith("VOLUME:"))
-async def agent_volume_response(message: Message):
-    user_id = message.from_user.id
-    vol = message.text.split(":")[1]
-    if user_id in pending_responses:
-        await pending_responses[user_id].put({"type": "text", "data": vol})
-
-@dp.message(F.func(lambda m: m.from_user and m.from_user.id in connected_pcs and not m.text.startswith("/")))
-async def agent_text_response(message: Message):
-    user_id = message.from_user.id
-    if user_id in pending_responses:
-        await pending_responses[user_id].put({"type": "text", "data": message.text})
-
-# ── Відправити команду до агента ─────────────────────────────────────────────
-async def send_command_to_pc(user_id, action, data=""):
-    if not is_pc_online(user_id):
-        return None
-    
-    pending_responses[user_id] = asyncio.Queue()
-    
-    try:
-        cmd = f"/cmd {action} {data}".strip()
-        await bot.send_message(user_id, cmd)
-        response = await asyncio.wait_for(pending_responses[user_id].get(), timeout=15)
-        return response
-    except asyncio.TimeoutError:
-        return None
-    finally:
-        pending_responses.pop(user_id, None)
+        # Оновлюємо URL якщо передано (ngrok URL може змінитись)
+        if len(parts) == 2:
+            connected_pcs[user_id]["url"] = parts[1].strip()
+        print(f"📡 Ping від {connected_pcs[user_id]['name']}")
 
 # ── Назад до меню ПК ─────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "pc_back")
@@ -472,32 +466,24 @@ async def pc_back(cb: CallbackQuery):
 async def pc_stats(cb: CallbackQuery):
     uid = cb.from_user.id
     await cb.answer(t(uid, "waiting_response"))
-    
-    response = await send_command_to_pc(uid, "stats")
-    if not response:
+    result = await send_to_agent(uid, "stats")
+    if result is None:
         await cb.message.answer(t(uid, "pc_disconnected"))
-        return
-    
-    await cb.message.answer(response["data"], parse_mode="HTML")
 
 # ── Скріншот ──────────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "pc_screenshot")
 async def pc_screenshot(cb: CallbackQuery):
     uid = cb.from_user.id
     await cb.answer(t(uid, "waiting_response"))
-    
-    response = await send_command_to_pc(uid, "screenshot")
-    if not response:
+    result = await send_to_agent(uid, "screenshot")
+    if result is None:
         await cb.message.answer(t(uid, "pc_disconnected"))
-        return
-    # Агент надішле фото напряму
 
 # ── Гучність ──────────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "pc_volume")
 async def pc_volume(cb: CallbackQuery):
     uid = cb.from_user.id
-    response = await send_command_to_pc(uid, "get_volume")
-    vol = response["data"] if response else "?"
+    vol = await send_to_agent(uid, "get_volume") or "?"
     await cb.message.edit_text(
         t(uid, "vol_current", vol=vol) + "\n\n" + t(uid, "vol_keyboard"),
         reply_markup=volume_keyboard(uid),
@@ -508,10 +494,7 @@ async def pc_volume(cb: CallbackQuery):
 @dp.callback_query(F.data.in_(["vol_up", "vol_down", "vol_mute"]))
 async def volume_action(cb: CallbackQuery):
     uid = cb.from_user.id
-    action_map = {"vol_up": "vol_up", "vol_down": "vol_down", "vol_mute": "vol_mute"}
-    action = action_map[cb.data]
-    response = await send_command_to_pc(uid, action)
-    vol = response["data"] if response else "?"
+    vol = await send_to_agent(uid, cb.data) or "?"
     await cb.message.edit_text(
         t(uid, "vol_current", vol=vol) + "\n\n" + t(uid, "vol_keyboard"),
         reply_markup=volume_keyboard(uid),
@@ -523,38 +506,34 @@ async def volume_action(cb: CallbackQuery):
 @dp.callback_query(F.data == "pc_music")
 async def pc_music(cb: CallbackQuery):
     uid = cb.from_user.id
-    await cb.message.edit_text(
-        t(uid, "music_keyboard"),
-        reply_markup=music_keyboard(uid)
-    )
+    await cb.message.edit_text(t(uid, "music_keyboard"), reply_markup=music_keyboard(uid))
     await cb.answer()
 
 @dp.callback_query(F.data.in_(["music_prev", "music_playpause", "music_next"]))
 async def music_action(cb: CallbackQuery):
     uid = cb.from_user.id
-    await send_command_to_pc(uid, cb.data)
+    await send_to_agent(uid, cb.data)
     await cb.answer(t(uid, "cmd_sent"))
 
 # ── Мікрофон ─────────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "pc_mic")
 async def pc_mic(cb: CallbackQuery):
     uid = cb.from_user.id
-    response = await send_command_to_pc(uid, "mic_toggle")
-    status = response["data"] if response else "?"
-    await cb.answer(f"🎤 {status}", show_alert=True)
+    result = await send_to_agent(uid, "mic_toggle") or "?"
+    await cb.answer(f"🎤 {result}", show_alert=True)
 
 # ── Заблокувати ───────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "pc_lock")
 async def pc_lock(cb: CallbackQuery):
     uid = cb.from_user.id
-    await send_command_to_pc(uid, "lock")
+    await send_to_agent(uid, "lock")
     await cb.answer(t(uid, "cmd_sent"))
 
 # ── Сон ──────────────────────────────────────────────────────────────────────
 @dp.callback_query(F.data == "pc_sleep")
 async def pc_sleep(cb: CallbackQuery):
     uid = cb.from_user.id
-    await send_command_to_pc(uid, "sleep")
+    await send_to_agent(uid, "sleep")
     await cb.answer(t(uid, "cmd_sent"))
 
 # ── Вимкнення ─────────────────────────────────────────────────────────────────
@@ -571,7 +550,7 @@ async def pc_shutdown_confirm(cb: CallbackQuery):
 @dp.callback_query(F.data == "shutdown_yes")
 async def pc_shutdown_yes(cb: CallbackQuery):
     uid = cb.from_user.id
-    await send_command_to_pc(uid, "shutdown")
+    await send_to_agent(uid, "shutdown")
     connected_pcs.pop(uid, None)
     await cb.message.edit_text(t(uid, "disconnected_pc"))
     await cb.answer()
@@ -590,7 +569,7 @@ async def pc_reboot_confirm(cb: CallbackQuery):
 @dp.callback_query(F.data == "reboot_yes")
 async def pc_reboot_yes(cb: CallbackQuery):
     uid = cb.from_user.id
-    await send_command_to_pc(uid, "reboot")
+    await send_to_agent(uid, "reboot")
     connected_pcs.pop(uid, None)
     await cb.message.edit_text(t(uid, "disconnected_pc"))
     await cb.answer()
@@ -613,10 +592,7 @@ async def set_lang(cb: CallbackQuery):
     uid = cb.from_user.id
     lang = "uk" if cb.data == "set_lang_uk" else "en"
     user_lang[uid] = lang
-    await cb.message.answer(
-        t(uid, "lang_changed"),
-        reply_markup=main_keyboard(uid)
-    )
+    await cb.message.answer(t(uid, "lang_changed"), reply_markup=main_keyboard(uid))
     await cb.answer()
 
 # ── Запуск ────────────────────────────────────────────────────────────────────
